@@ -1,0 +1,142 @@
+# Copyright 2025
+# SR-TE Lab - OSPF-TE + SR-MPLS + Stateful PCE
+#
+#              pce (100.100.100.107)
+#               |
+#           [GE2]router2[GE1]
+#          /                 \
+# pc1--router1             router4--pc2
+#          \                 /
+#           [GE1]router3[GE1]
+#
+# Loopbacks:
+#   router1 : 100.100.100.101/32  (SID 16101, FA128=16201, FA129=16301)
+#   router2 : 100.100.100.102/32  (SID 16102, FA128=16202, FA129=16302)
+#   router3 : 100.100.100.103/32  (SID 16103, FA128=16203, FA129=16303)
+#   router4 : 100.100.100.104/32  (SID 16104, FA128=16204, FA129=16304)
+#   pce     : 100.100.100.107/32  (SID 16107)
+#
+# Data Links (IGP metric / delay):
+#   router1 GE0 <-> router2 GE0 : 100.101.102.0/24  metric 10 / delay 100us  (TOP  path)
+#   router1 GE1 <-> router3 GE0 : 100.101.103.0/24  metric 20 / delay 10us   (BOT  path)
+#   router2 GE1 <-> router4 GE0 : 100.102.104.0/24  metric 10 / delay 100us  (TOP  path)
+#   router3 GE1 <-> router4 GE1 : 100.103.104.0/24  metric 20 / delay 10us   (BOT  path)
+#   router2 GE2 <-> pce   GE0   : 100.102.107.0/24  metric 1
+#
+# CE Links:
+#   pc1 <-> router1 GE2 : 10.1.1.0/24
+#   router4 GE2 <-> pc2 : 10.3.1.0/24
+#
+# Path logic:
+#   Default IGP (algo 0)  : R1->R2->R4 (metric 20)      preferred over R1->R3->R4 (metric 40)
+#   Flex-Algo 128 (delay) : R1->R3->R4 (delay  20us)    preferred over R1->R2->R4 (delay 200us)
+#   Flex-Algo 129 (TE-met): R1->R2->R4 (TE-metric 10)   same as default
+#   Explicit color 200    : forced R1->R2->R4
+#   Explicit color 300    : forced R1->R3->R4
+#
+# BGP-LS : router1 & router4 --> pce  (build TED)
+# VPNv4  : router1 <-> router4        (direct iBGP, no RR needed)
+# PCEP   : router1 & router4 as PCCs  --> pce as stateful PCE
+
+services:
+  # ── Linux endpoints ────────────────────────────────────────────────────────
+  pc1:
+    non_xr: true
+    image: alpine:3.15
+    container_name: pc1
+    stdin_open: true
+    tty: true
+    cap_add:
+      - NET_ADMIN
+    command: /bin/sh -c "ip route add 10.0.0.0/8 via 10.1.1.3 && /bin/sh"
+    networks:
+      pc1-router1:
+        ipv4_address: 10.1.1.2
+
+  pc2:
+    non_xr: true
+    image: alpine:3.15
+    container_name: pc2
+    stdin_open: true
+    tty: true
+    cap_add:
+      - NET_ADMIN
+    command: /bin/sh -c "ip route add 10.0.0.0/8 via 10.3.1.104 && /bin/sh"
+    networks:
+      router4-pc2:
+        ipv4_address: 10.3.1.2
+
+  # ── XRd routers ────────────────────────────────────────────────────────────
+  router1:
+    xr_startup_cfg: router1-startup.cfg
+    xr_interfaces:
+      - Gi0/0/0/0 # -> router2
+      - Gi0/0/0/1 # -> router3
+      - Gi0/0/0/2 # -> pc1 (VRF 100)
+      - Mg0/RP0/CPU0/0
+    networks:
+      pc1-router1:
+        ipv4_address: 10.1.1.3
+
+  router2:
+    xr_startup_cfg: router2-startup.cfg
+    xr_interfaces:
+      - Gi0/0/0/0 # -> router1
+      - Gi0/0/0/1 # -> router4
+      - Gi0/0/0/2 # -> pce
+      - Mg0/RP0/CPU0/0
+
+  router3:
+    xr_startup_cfg: router3-startup.cfg
+    xr_interfaces:
+      - Gi0/0/0/0 # -> router1
+      - Gi0/0/0/1 # -> router4
+      - Mg0/RP0/CPU0/0
+
+  router4:
+    xr_startup_cfg: router4-startup.cfg
+    xr_interfaces:
+      - Gi0/0/0/0 # -> router2
+      - Gi0/0/0/1 # -> router3
+      - Gi0/0/0/2 # -> pc2 (VRF 100)
+      - Mg0/RP0/CPU0/0
+    networks:
+      router4-pc2:
+        ipv4_address: 10.3.1.104
+
+  pce:
+    xr_startup_cfg: pce-startup.cfg
+    xr_interfaces:
+      - Gi0/0/0/0 # -> router2
+      - Mg0/RP0/CPU0/0
+
+xr_l2networks:
+  - ["router1:Gi0/0/0/0", "router2:Gi0/0/0/0"]
+  - ["router1:Gi0/0/0/1", "router3:Gi0/0/0/0"]
+  - ["router2:Gi0/0/0/1", "router4:Gi0/0/0/0"]
+  - ["router3:Gi0/0/0/1", "router4:Gi0/0/0/1"]
+  - ["router2:Gi0/0/0/2", "pce:Gi0/0/0/0"]
+
+networks:
+  mgmt:
+    xr_interfaces:
+      - router1:Mg0/RP0/CPU0/0
+      - router2:Mg0/RP0/CPU0/0
+      - router3:Mg0/RP0/CPU0/0
+      - router4:Mg0/RP0/CPU0/0
+      - pce:Mg0/RP0/CPU0/0
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  pc1-router1:
+    ipam:
+      config:
+        - subnet: 10.1.1.0/24
+    xr_interfaces:
+      - router1:Gi0/0/0/2
+  router4-pc2:
+    ipam:
+      config:
+        - subnet: 10.3.1.0/24
+    xr_interfaces:
+      - router4:Gi0/0/0/2
