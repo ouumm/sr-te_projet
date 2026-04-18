@@ -1,1 +1,0 @@
-# sr-te_projet
